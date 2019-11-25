@@ -1,0 +1,871 @@
+#!/bin/sh
+set -eu
+
+cli_name=$(basename "$0")
+cli_version='1.0.0'
+compat='1'
+export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-central}
+
+check_prerequisites() {
+    docker --version >/dev/null || { echo 'docker is required' && exit 1; }
+    docker-compose --version >/dev/null || { echo 'docker-compose is required' && exit 1; }
+    wget --version >/dev/null || { echo 'wget is required' && exit 1; }
+    docker info >/dev/null 2>&1 || { echo 'docker is required to be running. Check that the docker daemon is running and permissions are set to access the docker daemon.' && exit 1; }
+}
+
+check_uninitialized() {
+    [ ! -f .env ] || [ ! -f docker-compose.yml ] && printf 'fatal: You must first initialize a launch configuration. Run the "init" command.\n\n'
+}
+
+check_up() {
+    [ ! "$(docker-compose ps -q)" ] && printf 'fatal: You must first launch the containers. Run the "up" command.\n\n'
+}
+
+get_latest_compose_file() {
+    repo='Oblong/central'
+    latest_version=$(wget --quiet --output-document - "https://api.github.com/repos/${repo}/releases/latest" | grep tag_name | cut -d'"' -f4)
+    [ -z "${latest_version}" ] && { printf 'fatal: Unable to get the latest compose file. Check network connection.\n\n' && exit 1; }
+    latest_compose="https://github.com/${repo}/releases/download/${latest_version}/docker-compose.yml"
+    wget --quiet --output-document docker-compose.yml "${latest_compose}"
+}
+
+current_central_version() {
+    docker-compose config | grep 'image: ' | head -n 1 | cut -d: -f3
+}
+
+parse_cmds() {
+    if [ "$#" -lt 1 ]; then
+        usage
+        exit 1
+    else
+        case "$1" in
+            -h|--help)
+                usage
+                return
+            ;;
+            -v|--version)
+                cmd_version
+                return
+            ;;
+            help)
+                shift
+                cmd_help "$@"
+                return
+            ;;
+            init)
+                shift
+                cmd_init "$@"
+                return
+            ;;
+            up)
+                shift
+                cmd_up "$@"
+                return
+            ;;
+            down)
+                shift
+                cmd_down "$@"
+                return
+            ;;
+            destroy)
+                shift
+                cmd_destroy "$@"
+                return
+            ;;
+            backup)
+                shift
+                cmd_backup "$@"
+                return
+            ;;
+            restore)
+                shift
+                cmd_restore "$@"
+                return
+            ;;
+            upgrade)
+                shift
+                cmd_upgrade "$@"
+                return
+            ;;
+            revert)
+                shift
+                cmd_revert "$@"
+                return
+            ;;
+            logs)
+                shift
+                cmd_logs "$@"
+                return
+            ;;
+            status)
+                shift
+                cmd_status "$@"
+                return
+            ;;
+            reset-admin)
+                shift
+                cmd_reset_admin "$@"
+                return
+            ;;
+            *)
+                echo "Error: $1 not a valid command"
+                usage
+                exit 1
+            ;;
+        esac
+    fi
+}
+
+usage() {
+    cat <<EOF
+usage: ${cli_name} [--version] [--help] <command> [<args>]
+
+These are common Central commands used in various situations:
+
+initialization and start operations
+  init           Initialize or reinitialize a launch configuration
+  up             Start all containers
+
+stop operations
+  down           Stop all containers
+  destroy        Stop and remove all containers, networks, and data volumes
+
+maintenance operations
+  backup         Backup all data and configurations
+  restore        Restore a previous backup
+  upgrade        Perform an upgrade to the latest version
+  revert         Reverts a previous upgrade attempt
+  logs           View the output logs
+  status         Show the current configuration and container statuses
+  reset-admin    Reset the admin account
+
+See '${cli_name} help <command>' to read about a specific command.
+EOF
+}
+
+cmd_help() {
+    if [ "$#" -lt 1 ]; then
+        usage
+        exit 0
+    else
+        case "$1" in
+            init)
+                cmd_init_help
+                exit 0
+            ;;
+            up)
+                cmd_up_help
+                exit 0
+            ;;
+            down)
+                cmd_down_help
+                exit 0
+            ;;
+            destroy)
+                cmd_destroy_help
+                exit 0
+            ;;
+            backup)
+                cmd_backup_help
+                exit 0
+            ;;
+            restore)
+                cmd_restore_help
+                exit 0
+            ;;
+            upgrade)
+                cmd_backup_help
+                exit 0
+            ;;
+            revert)
+                cmd_revert_help
+                exit 0
+            ;;
+            logs)
+                cmd_logs_help
+                exit 0
+            ;;
+            status)
+                cmd_status_help
+                exit 0
+            ;;
+            reset-admin)
+                cmd_reset_admin_help
+                exit 0
+            ;;
+            *)
+                printf "error: unknown command \`%s\`\n\n" "$1"
+                usage
+                exit 1
+            ;;
+        esac
+    fi
+}
+
+cmd_init() {
+    hostname=
+    port=9900
+
+    if [ "$#" -lt 1 ]; then
+        cmd_init_usage
+        exit 1
+    else
+        while [ "$#" -gt 0 ]; do
+            arg_keyword=$1
+            case $arg_keyword in
+                --help)
+                    cmd_init_help
+                    exit 0
+                ;;
+                --hostname)
+                    hostname="$2"
+                    shift
+                ;;
+                --port)
+                    port="$2"
+                    shift
+                ;;
+                *)
+                    printf "error: unknown option \`%s\`\n\n" "$arg_keyword"
+                    cmd_init_usage
+                    exit 1
+                ;;
+            esac
+            shift $(( $# > 0 ? 1 : 0 ))
+        done
+    fi
+
+    test -z "${hostname}" && { printf 'fatal: You must specify a hostname.\n\n' && cmd_init_usage && exit 1; }
+    test -z "${port}" && { printf 'fatal: You must specify a port number.\n\n' && cmd_init_usage && exit 1; }
+
+    check_prerequisites
+    get_latest_compose_file
+    env_pg_pass=$(cat < /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1)
+    if [ -f ./.env ]; then
+        env_pg_pass=$(. ./.env && echo "$POSTGRES_PASSWORD")
+    fi
+
+    test -z "${env_pg_pass}" && { printf 'fatal: Empty POSTGRES_PASSWORD detected in the .env file. You must manually edit the .env file and specify a non-empty value or delete the .env file then re-run the "init" command.\n\n' && cmd_init_usage && exit 1; }
+
+    cat <<EOF >.env
+CENTRAL_HOST=${hostname}
+CENTRAL_PORT=${port}
+POSTGRES_PASSWORD=${env_pg_pass}
+EOF
+    printf 'Initialization complete. Run the "up" command to launch.\n\n'
+}
+
+cmd_init_usage() {
+    cat <<EOF
+usage: ${cli_name} init --hostname <hostname> [--port <port>]
+
+    --hostname <hostname>    network-addressable hostname of the Docker host machine
+    --port <port>            port number on the Docker host machine to allow access to Central. Defaults to 9900.
+
+EOF
+}
+
+cmd_init_help() {
+    cat <<EOF
+NAME
+        ${cli_name} init - Initialize or reinitialize a launch configuration
+
+SYNOPSIS
+        ${cli_name} init --hostname <hostname> [--port <port>]
+
+DESCRIPTION
+        This command initializes or reinitializes a launch configuration.
+
+OPTIONS
+        --hostname <hostname>
+            This is the network-addressable hostname of the Docker host machine.
+        --port <port>
+            This is the port number on the Docker host machine to allow access to Central. Defaults to 9900.
+
+EOF
+}
+
+cmd_up() {
+    while [ "$#" -gt 0 ]; do
+        arg_keyword=$1
+        case "$arg_keyword" in
+            --help)
+                cmd_up_help
+                exit 0
+            ;;
+            *)
+                printf "error: unknown option \`%s\`\n\n" "$arg_keyword"
+                cmd_up_usage
+                exit 1
+            ;;
+        esac
+        shift $(( $# > 0 ? 1 : 0 ))
+    done
+
+    check_uninitialized && { cmd_up_usage && exit 1; }
+    check_prerequisites
+    docker-compose up -d
+
+    printf '\nGo to https://%s:%s to access the web portal.\n\n' "$(. ./.env && echo "$CENTRAL_HOST")" "$(. ./.env && echo "$CENTRAL_PORT")"
+}
+
+cmd_up_usage() {
+    cat <<EOF
+usage: ${cli_name} up
+
+EOF
+}
+
+cmd_up_help() {
+    cat <<EOF
+NAME
+        ${cli_name} up - Starts all containers
+
+SYNOPSIS
+        ${cli_name} up
+
+DESCRIPTION
+        This command initializes a launch configuration and starts all containers.
+
+EOF
+}
+
+cmd_down() {
+    while [ "$#" -gt 0 ]; do
+        arg_keyword=$1
+        case $arg_keyword in
+            --help)
+                cmd_down_help
+                exit 0
+            ;;
+            *)
+                printf "error: unknown option \`%s\`\n\n" "$arg_keyword"
+                cmd_down_usage
+                exit 1
+            ;;
+        esac
+        shift $(( $# > 0 ? 1 : 0 ))
+    done
+
+    check_uninitialized && { cmd_down_usage && exit 1; }
+    check_prerequisites
+    docker-compose down
+}
+
+cmd_down_usage() {
+    cat <<EOF
+usage: ${cli_name} down
+
+EOF
+}
+
+cmd_down_help() {
+    cat <<EOF
+NAME
+        ${cli_name} down - Stop all containers
+
+SYNOPSIS
+        ${cli_name} down
+
+DESCRIPTION
+        This command stops all containers from running.
+
+EOF
+}
+
+cmd_destroy() {
+    force=0
+    while [ "$#" -gt 0 ]; do
+        arg_keyword=$1
+        case $arg_keyword in
+            -f|--force)
+                force=1
+                shift
+            ;;
+            --help)
+                cmd_destroy_help
+                exit 0
+            ;;
+            *)
+                printf "error: unknown option \`%s\`\n\n" "$arg_keyword"
+                cmd_destroy_usage
+                exit 1
+            ;;
+        esac
+        shift $(( $# > 0 ? 1 : 0 ))
+    done
+
+    check_uninitialized && { cmd_destroy_usage && exit 1; }
+    check_prerequisites
+
+    if [ 0 -eq ${force} ]
+    then
+        printf "The following volumes will be deleted:\n - central_config\n - central_db\nDo you want to continue [y/n]?  "
+        read -r REPLY
+        printf "\n"
+        [ "$REPLY" != 'y' ] && [ "$REPLY" != 'n' ] && { echo "Please enter 'y' or 'n'" && exit 1; }
+        [ "$REPLY" != 'y' ] && { echo "Destroy aborted by user." && exit 1; }
+    fi
+
+    docker-compose down --volumes
+    printf 'Destroy complete.\n\n'
+}
+
+cmd_destroy_usage() {
+    cat <<EOF
+usage: ${cli_name} destroy [--force]
+
+    -f, --force            This will suppress all interactive prompts
+EOF
+}
+
+cmd_destroy_help() {
+    cat <<EOF
+NAME
+        ${cli_name} destroy - Stop and remove all containers, networks, and data volumes
+
+SYNOPSIS
+        ${cli_name} destroy [--force]
+
+DESCRIPTION
+        This command stops all containers from running and removes all associated networks and data volumes.
+
+OPTIONS
+        -f, --force
+            This will suppress all interactive prompts
+EOF
+}
+
+cmd_backup() {
+    name=
+    while [ "$#" -gt 0 ]; do
+        arg_keyword=$1
+        case $arg_keyword in
+            --help)
+                cmd_backup_help
+                exit 0
+            ;;
+            --*)
+                printf "error: unknown option \`%s\`\n\n" "$arg_keyword"
+                cmd_backup_usage
+                exit 1
+            ;;
+            *)
+                name=${1}
+                break
+            ;;
+        esac
+        shift $(( $# > 0 ? 1 : 0 ))
+    done
+
+    test -z "${name}" && { printf 'fatal: You must specify a name for the backup.\n\n' && cmd_backup_usage && exit 1; }
+
+    check_uninitialized && { cmd_backup_usage && exit 1; }
+    check_prerequisites
+    check_up && { cmd_backup_usage && exit 1; }
+
+    archive_name="${name}.tar.gz"
+    echo "Backing up to ${archive_name}"
+    stage=$(mktemp -d)
+    echo ${compat} > "${stage}/compat"
+    cp .env docker-compose.yml "${stage}"
+    docker-compose run --rm -v "${stage}:/backup" init backup
+    tar -C "${stage}" -zcf "${archive_name}" .
+    rm -rf "${stage}"
+    printf 'Backup complete.\n\n'
+}
+
+cmd_backup_usage() {
+    cat <<EOF
+usage: ${cli_name} backup [<name>]
+
+EOF
+}
+
+cmd_backup_help() {
+    cat <<EOF
+NAME
+        ${cli_name} backup - Backup all data and configurations
+
+SYNOPSIS
+        ${cli_name} backup [<name>]
+
+DESCRIPTION
+        This command creates a backup of the current manifest file, current
+        environment data, database data and configuration data to the current
+        directory. The resulting named backup file will end in .tar.gz
+
+        This command will check that the system is up prior to backup.
+
+        To restore, run the 'restore' command with the backup file.
+
+EOF
+}
+
+cmd_restore() {
+    named_backup_file=
+    while [ "$#" -gt 0 ]; do
+        arg_keyword=$1
+        case $arg_keyword in
+            --help)
+                cmd_restore_help
+                exit 0
+            ;;
+            --*)
+                printf "error: unknown option \`%s\`\n\n" "$arg_keyword"
+                cmd_restore_usage
+                exit 1
+            ;;
+            *)
+                named_backup_file=${1}
+                break
+            ;;
+        esac
+        shift $(( $# > 0 ? 1 : 0 ))
+    done
+
+    test -z "${named_backup_file}" && { printf 'fatal: You must specify an existing backup file.\n\n' && cmd_restore_usage && exit 1; }
+    [ ! -e "${named_backup_file}" ] && { printf 'fatal: File %s does not exist.\n\n' "${named_backup_file}" && cmd_restore_usage && exit 1; }
+
+    check_prerequisites
+
+    stage=$(mktemp -d)
+    tar -C "${stage}" -xf "${named_backup_file}"
+    if [ ! -f "${stage}/compat" ] || [ "$(cat "${stage}/compat")" != "${compat}" ]; then printf 'fatal: Backup file %s is not compatible for restoring this backup.\n\n' "${named_backup_file}" && cmd_restore_usage && exit 1; fi
+    cp "${stage}/.env" "${stage}/docker-compose.yml" .
+    cmd_down
+    docker-compose run --rm -v "${stage}:/backup" init restore
+    docker volume rm -f "${COMPOSE_PROJECT_NAME}_central_db"
+    docker-compose run --rm \
+    -v "${stage}/db.sql:/docker-entrypoint-initdb.d/db.sql" \
+    database --version >/dev/null
+    rm -rf "${stage}"
+    printf 'Restore complete.\n\n'
+}
+
+cmd_restore_usage() {
+    cat <<EOF
+usage: ${cli_name} restore <backup-file>
+
+EOF
+}
+
+cmd_restore_help() {
+    cat <<EOF
+NAME
+        ${cli_name} restore - Restores all data and configurations
+
+SYNOPSIS
+        ${cli_name} restore <backup-file>
+
+DESCRIPTION
+        This command restores data from a previous backup. The backup file name
+        ends in .tar.gz
+
+        This command will stop all containers prior to restoration.
+EOF
+}
+
+cmd_upgrade() {
+    force=0
+    while [ "$#" -gt 0 ]; do
+        arg_keyword=$1
+        case $arg_keyword in
+            -f|--force)
+                force=1
+                shift
+            ;;
+            --help)
+                cmd_upgrade_help
+                exit 0
+            ;;
+            *)
+                printf "error: unknown option \`%s\`\n\n" "$arg_keyword"
+                cmd_upgrade_usage
+                exit 1
+            ;;
+        esac
+        shift $(( $# > 0 ? 1 : 0 ))
+    done
+
+    check_uninitialized && { cmd_upgrade_usage && exit 1; }
+    check_prerequisites
+    check_up && { cmd_upgrade_usage && exit 1; }
+
+    [ -f .autobackup_upgrade.tar.gz ] && { printf 'An upgrade is already in progress. Run the "revert" command to abort the upgrade and attempt it again.\n\n' && exit 1; }
+
+    if [ 0 -eq ${force} ]
+    then
+        printf 'It is highly recommended to make a backup with the "backup" command prior to upgrading.\nDo you want to continue [y/n]?  '
+        read -r REPLY
+        printf "\n"
+        [ "$REPLY" != 'y' ] && [ "$REPLY" != 'n' ] && { echo "Please enter 'y' or 'n'" && exit 1; }
+        [ "$REPLY" != 'y' ] && { echo "Upgrade aborted by user." && exit 1; }
+    fi
+
+    cmd_backup .autobackup_upgrade
+    cmd_down
+    get_latest_compose_file
+    cmd_up
+    # TODO: health check
+    rm .autobackup_upgrade.tar.gz
+    printf 'Upgrade complete.\n\n'
+}
+
+cmd_upgrade_usage() {
+    cat <<EOF
+usage: ${cli_name} upgrade [--force]
+
+    -f, --force            This will suppress all interactive prompts
+EOF
+}
+
+cmd_upgrade_help() {
+    cat <<EOF
+NAME
+        ${cli_name} upgrade - Upgrades to the latest version
+
+SYNOPSIS
+        ${cli_name} upgrade [--force]
+
+DESCRIPTION
+        This command performs an upgrade to the latest version. The upgrade
+        command requires an Internet connection to retrieve the latest manifest
+        file from github.com/Oblong/central. It is highly recommended to make
+        a backup with the "backup" command prior to upgrading.
+
+OPTIONS
+        -f, --force
+            This will suppress all interactive prompts
+EOF
+}
+
+
+cmd_revert() {
+    while [ "$#" -gt 0 ]; do
+        arg_keyword=$1
+        case $arg_keyword in
+            --help)
+                cmd_revert_help
+                exit 0
+            ;;
+            *)
+                printf "error: unknown option \`%s\`\n\n" "$arg_keyword"
+                cmd_revert_usage
+                exit 1
+            ;;
+        esac
+        shift $(( $# > 0 ? 1 : 0 ))
+    done
+
+    check_prerequisites
+
+    [ ! -f .autobackup_upgrade.tar.gz ] && { echo "There's nothing to revert" && exit 1; }
+    cmd_restore .autobackup_upgrade.tar.gz
+    rm .autobackup_upgrade.tar.gz
+    printf 'The previous upgrade attempt has been reverted.\n\n'
+}
+
+cmd_revert_usage() {
+    cat <<EOF
+usage: ${cli_name} revert
+
+EOF
+}
+
+cmd_revert_help() {
+    cat <<EOF
+NAME
+        ${cli_name} revert - Reverts a previous upgrade attempt
+
+SYNOPSIS
+        ${cli_name} revert
+
+DESCRIPTION
+        This command reverts the latest upgrade attempt by restoring the
+        previous manifest file. Any changes made since the latest upgrade will
+        be lost.
+EOF
+}
+
+cmd_logs() {
+    follow=
+    while [ "$#" -gt 0 ]; do
+        arg_keyword=$1
+        case $arg_keyword in
+            --help)
+                cmd_logs_help
+                exit 0
+            ;;
+            -f|--follow)
+                follow=--follow
+            ;;
+            *)
+                printf "error: unknown option \`%s\`\n\n" "$arg_keyword"
+                cmd_logs_usage
+                exit 1
+            ;;
+        esac
+        shift $(( $# > 0 ? 1 : 0 ))
+    done
+
+    check_uninitialized && { cmd_logs_usage && exit 1; }
+    check_prerequisites
+    docker-compose logs ${follow}
+}
+
+cmd_logs_usage() {
+    cat <<EOF
+usage: ${cli_name} logs [-f]
+
+    -f, --follow    follow log output
+
+EOF
+}
+
+cmd_logs_help() {
+    cat <<EOF
+NAME
+        ${cli_name} logs - View the output logs
+
+SYNOPSIS
+        ${cli_name} logs [-f]
+
+DESCRIPTION
+        This command displays log output from all containers.
+
+OPTIONS
+        -f, --follow
+            This follows log output
+
+EOF
+}
+
+cmd_status() {
+    while [ "$#" -gt 0 ]; do
+        arg_keyword=$1
+        case $arg_keyword in
+            --help)
+                cmd_status_help
+                exit 0
+            ;;
+            *)
+                printf "error: unknown option \`%s\`\n\n" "$arg_keyword"
+                cmd_status_usage
+                exit 1
+            ;;
+        esac
+        shift $(( $# > 0 ? 1 : 0 ))
+    done
+
+    check_uninitialized && { cmd_status_usage && exit 1; }
+    check_prerequisites
+    version=$(current_central_version)
+    echo "Version: ${version:-unknown}"
+    echo "Environment:"
+    awk '{print "  " $0}' .env
+    echo
+    echo "Status:"
+    docker-compose ps api_server database portal_server front_proxy
+}
+
+cmd_status_usage() {
+    cat <<EOF
+usage: ${cli_name} status
+
+EOF
+}
+
+cmd_status_help() {
+    cat <<EOF
+NAME
+        ${cli_name} status - Displays the current environment and container statuses
+
+SYNOPSIS
+        ${cli_name} status
+
+DESCRIPTION
+        This command displays the current environment and container statuses.
+EOF
+}
+
+cmd_reset_admin() {
+    force=0
+    while [ "$#" -gt 0 ]; do
+        arg_keyword=$1
+        case $arg_keyword in
+            -f|--force)
+                force=1
+                shift
+            ;;
+            --help)
+                cmd_reset_admin_help
+                exit 0
+            ;;
+            *)
+                printf "error: unknown option \`%s\`\n\n" "$arg_keyword"
+                cmd_reset_admin_usage
+                exit 1
+            ;;
+        esac
+        shift $(( $# > 0 ? 1 : 0 ))
+    done
+
+    check_uninitialized && { cmd_reset_admin_usage && exit 1; }
+    check_prerequisites
+    check_up && { cmd_reset_admin_usage && exit 1; }
+
+    if [ 0 -eq ${force} ]
+    then
+        printf "Are you sure you want to reset the admin account [y/n]?  "
+        read -r REPLY
+        printf "\n"
+        [ "$REPLY" != 'y' ] && [ "$REPLY" != 'n' ] && { echo "Please enter 'y' or 'n'" && exit 1; }
+        [ "$REPLY" != 'y' ] && { echo "Admin account reset aborted by user." && exit 1; }
+    fi
+
+    docker-compose exec -T database reset-central-admin >/dev/null 2>&1
+
+    printf 'Admin account has been reset.\n\n'
+    printf 'Go to https://%s:%s to access the web portal and create the new admin account.\n\n' "$(. ./.env && echo "$CENTRAL_HOST")" "$(. ./.env && echo "$CENTRAL_PORT")"
+}
+
+cmd_reset_admin_usage() {
+    cat <<EOF
+usage: ${cli_name} reset-admin [--force]
+
+    -f, --force            This will suppress all interactive prompts
+
+EOF
+}
+
+cmd_reset_admin_help() {
+    cat <<EOF
+NAME
+        ${cli_name} reset-admin - Resets the current admin account
+
+SYNOPSIS
+        ${cli_name} reset-admin [--force]
+
+DESCRIPTION
+        This command resets the current admin account. After running this
+        command you will need to go to the web portal to create a new admin
+        account.
+
+        This command will check that the system is up prior to running.
+
+OPTIONS
+        -f, --force
+            This will suppress all interactive prompts
+EOF
+}
+
+cmd_version() {
+    echo "${cli_name} cli version: ${cli_version}"
+}
+
+main() {
+    parse_cmds "$@"
+}
+
+main "$@"
