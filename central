@@ -400,7 +400,7 @@ cmd_destroy() {
 
     if [ 0 -eq ${force} ]
     then
-        printf "The following volumes will be deleted:\n - central_config\n - central_db\nDo you want to continue [y/n]?  "
+        printf "The following volumes will be deleted:\n - central_config\n - central_db\n - central_var\nDo you want to continue [y/n]?  "
         read -r REPLY
         printf "\n"
         [ "$REPLY" != 'y' ] && [ "$REPLY" != 'n' ] && { echo "Please enter 'y' or 'n'" && exit 1; }
@@ -762,11 +762,13 @@ cmd_status() {
     check_prerequisites
     version=$(current_central_version)
     echo "Version: ${version:-unknown}"
+    echo
     echo "Environment:"
     awk '{print "  " $0}' .env
     echo
     echo "Status:"
-    docker-compose ps api_server database portal_server front_proxy
+    # shellcheck disable=SC2046
+    docker-compose ps $(docker-compose config --services | grep -v '^init$')
 }
 
 cmd_status_usage() {
