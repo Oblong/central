@@ -95,3 +95,17 @@ new default account login using the Central web portal.
 
     $ ./central reset-admin
 
+Check the SSL connection:
+
+    $ openssl s_client -showcerts -connect <CENTRAL_HOST>:<CENTRAL_PORT>
+
+This command uses a generic SSL/TLS client that establishes a connection to a
+server speaking SSL/TLS and returns all the certificates. The certificate chain
+is listed under the "Certificate chain" label. Use Ctrl+D to close the session
+to which the server should respond "DONE". This assumes OpenSSL is already
+installed.
+
+The output from the previous command will also display the raw certificate data.
+To view it in a human readable format:
+
+    $ openssl s_client -showcerts -connect <CENTRAL_HOST>:<CENTRAL_PORT> | openssl x509 -text -noout
