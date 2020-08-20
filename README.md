@@ -24,14 +24,17 @@ Mezzanine Central must be deployed on a Linux system with both Docker and
 
 Minimal requirements:
 
-* Linux operating system
+* x86 CPU (we do not support ARM processors such as those used by Raspberry
+  Pi)
+* A compatible Linux operating system
+  - Recommended: Ubuntu 18.04
+  - Other distros that support the following Docker versions should work but
+    haven't been tested
 * [Docker CE (Community Edition)](https://docs.docker.com/install/) > v19.03.3
 * [Docker Compose](https://docs.docker.com/compose/install/) > v1.24.1
 * wget
 * Access to the Internet to download a Docker Compose file and pull container
   images
-
-
 
 # Getting Started
 
@@ -65,47 +68,198 @@ should you experience trouble following an upgrade:
 
     $ ./central revert
 
+
+
+# Backup / Restore
+
 You can also create and restore named backups at any time with the `backup`
-and `restore` commands. Backups encapsulate both the central software
-version as well as the database containing devices and settings, and the
-environment defined with `init`.
+and `restore` commands. Backups encapsulate the Mezzanine Central software
+version, the database containing devices and settings, and the environment
+defined with `init`.
+
+To backup, first make sure your Mezzanine Central server cluster is up,
+then run the backup command:
+
+    $ ./central backup <BACKUP_FILE>
+
+To restore, the Mezzanine Central cluster must be down. With the cluster
+down, run the following command:
+
+    $ ./central restore <BACKUP_FILE>
 
 
 
 # Troubleshooting
 
-Check the current status of Mezzanine Central:
+
+
+## Commands
+
+The Mezzanine Central CLI has several other commands that are useful
+for troubleshooting issues.
+
+### Checking the Status
+
+To check the status of your Mezzanine Central server:
 
     $ ./central status
 
-Check the logs for the various containers:
+### Checking the Logs
+
+To check the Mezzanine Central server logs:
 
     $ ./central logs
 
-If you encounter trouble, you can bring down the containers and destroy
-their volumes to ensure a clean start the next time you bring them up.
-This is recommended when encountering difficulty, or after changing the
-hostname and port using `init`.
+### Restarting the Cluster:
 
-    $ ./central destroy
+To restart the cluster you need to bring down the containers and bring them
+back up:
+
+    $ ./central down
+    $ ./central up
+
+### Resetting Admin Credentials
 
 If you forgot the admin account credentials, you can initiate a reset
-using the following command. After running the command, you can create a
-new default account login using the Central web portal.
+like so:
 
     $ ./central reset-admin
 
-Check the SSL connection:
+After running the command, you can create a new default account login using
+the Mezzanine Central web portal.
 
-    $ openssl s_client -showcerts -connect <CENTRAL_HOST>:<CENTRAL_PORT>
+### Destroying the Cluster
 
-This command uses a generic SSL/TLS client that establishes a connection to a
-server speaking SSL/TLS and returns all the certificates. The certificate chain
-is listed under the "Certificate chain" label. Use Ctrl+D to close the session
-to which the server should respond "DONE". This assumes OpenSSL is already
-installed.
+If you need to regenerate the server certificates and remove all registered
+Mezzanines you can bring the cluster down and blow everything away to ensure
+a clean start the next time you run `central up`. This is recommended as a
+last resort to problems or after changing the server's hostname or port using
+`init`.
 
-The output from the previous command will also display the raw certificate data.
-To view it in a human readable format:
+    $ ./central destroy
+
+
+
+## Mezzanine Central Agent Logs
+
+The central-agent service is what runs on Mezzanine to handle communication
+with the Mezzanine Central server. These logs should be accessible via a
+Mezzanine's admin web portal under the Logs tab as `central-agent.service`.
+
+
+
+## Mezzanine Central Service Failures
+
+The Mezzanine Central server and the central-agent service running on
+Mezzanine should automatically restart if they encounter an unrecoverable
+error. If the server goes down, all connected Mezzanines will attempt to
+reconnect until it comes back online.
+
+If for whatever reason it is not coming back up you can try the following
+options:
+
+- [restart the cluster](#restarting-the-cluster)
+- [restore a backup](#backup-restore)
+- [destroy and rebuild the cluster](#destroying-the-cluster)
+
+
+
+## Connection Issues
+
+The most common problems when setting up Mezzanine Central stem from
+networking issues.
+
+
+### FQDN, Hostname, and IP Address
+
+When identifying machines in Mezzanine Central, be it the server during
+`central init` or when adding rooms through the dashboard, prefer using
+the fully qualified domain name (FQDN). IP addresses should work but
+need to be static to avoid issues in the future.
+
+
+### Certificates
+
+Mezzanine Central uses a secure connection, so if certificates are wrong
+on either the server or the associated Mezzanine appliances you'll run into
+issues registering rooms and receiving updates.
+
+#### Mezzanine Central => Mezzanine
+
+To check the connection from the Mezzanine Central server to a Mezzanine
+appliance and verify the certificate:
+
+    $ openssl s_client -showcerts -connect <MEZZANINE_ADDRESS>:443 | openssl x509 -text -noout
+
+The output should contain details about the Mezzanine under `Issuer`,
+`Subject`, and `Subject Alternative Name`. The current date should also
+fall within the `Validity` range.
+
+#### Mezzanine => Mezzanine Central
+
+To check the connection from a Mezzanine appliance to the Mezzanine Central
+server and verify the certificate you'll need to SSH into the appliance and
+run:
 
     $ openssl s_client -showcerts -connect <CENTRAL_HOST>:<CENTRAL_PORT> | openssl x509 -text -noout
+
+The `Issuer` and `Subject` should have "Mezzanine Central Temporary
+Certificate" as the subject org (O) and `<CENTRAL_HOST>` as the subject
+common name (CN). The `Subject Altnernative Name` should contain the
+`<CENTRAL_HOST>`. The current date should also fall within the `Validity`
+range.
+
+
+### Date and Time
+
+If the date and time are out of sync on the Mezzanine Central server's host
+machine or on the individual Mezzanines this could cause communication
+issues.
+
+#### Setting Mezzanine Date & Time
+
+You should be able to set the Mezzanine date & time via the admin portal.
+This is the ideal approach for our appliances.
+
+The following methods should work via the terminal on Mezzanine appliances and
+any Mezzanine Central server host machine running Ubuntu 18.04 or other Linux
+distro using systemd (run `systemctl --version` to check).
+
+#### Setting Automatic Date & Time
+
+Check the time with the following command:
+
+    $ timedatectl
+
+Ideally the time is correct and the device is using NTP as represented by
+the following fields of the output:
+
+           System clock synchronized: yes
+    systemd-timesyncd.service active: yes
+
+If NTP is not enabled you can enable it by running the following:
+
+    $ sudo timedatectl set-ntp true
+
+This should automatically sync the system time to the NTP server.
+
+If NTP is already set but the time is still off by several minutes you can
+try forcing a sync, but this could be indicative of network problems:
+
+    $ sudo systemctl restart systemd-timesyncd.service
+
+You can confirm that the time was updated by checking the time as before
+using `timedatectl` or by checking the service status:
+
+    $ systemctl status systemd-timesyncd.service
+
+#### Setting Manual Date & Time
+
+If for some reason you can't use NTP such as on a private network with no
+access to an NTP server, you can set the time manually like so:
+
+    $ sudo timedatectl set-ntp false
+    $ sudo timedatectl set-time '2020-07-20 18:23:49'
+
+**Note**: After changing the system time you may need to reboot the device or
+cluster and regenerate the certificates.
