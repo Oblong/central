@@ -1,4 +1,3 @@
-
 # What is Mezzanine Central?
 
 Mezzanine Central is a directory service for Mezzanines inside an organization
@@ -8,8 +7,6 @@ about Mezzanine, visit [the Mezzanine website](https://oblong.com/mezzanine).
 You'll need a license provided by Oblong to deploy Mezzanine Central on your
 network and enable registration of Mezzanine systems, however you can set up
 the tool itself in advance.
-
-
 
 # Dependencies
 
@@ -24,16 +21,15 @@ Mezzanine Central must be deployed on a Linux system with both Docker and
 
 Minimal requirements:
 
-* x86 CPU (we do not support ARM processors such as those used by Raspberry
+- x86 CPU (we do not support ARM processors such as those used by Raspberry
   Pi)
-* A compatible Linux operating system
-  - Recommended: Ubuntu 18.04
-  - Other distros that support the following Docker versions should work but
-    haven't been tested
-* [Docker CE (Community Edition)](https://docs.docker.com/install/) > v19.03.3
-* [Docker Compose](https://docs.docker.com/compose/install/) > v1.24.1
-* wget
-* Access to the Internet to download a Docker Compose file and pull container
+- Single core
+- 512MB of RAM
+- Ubuntu 18.04 or higher is required as the Linux operating system
+- [Docker CE (Community Edition)](https://docs.docker.com/install/) > v19.03.3
+- [Docker Compose](https://docs.docker.com/compose/install/) > v1.24.1
+- wget
+- Access to the Internet to download a Docker Compose file and pull container
   images
 
 # Getting Started
@@ -41,21 +37,19 @@ Minimal requirements:
 Oblong provides a convenient command line tool to make managing your Mezzanine
 Central instance easy and robust. [Grab it here](https://raw.githubusercontent.com/Oblong/central/master/central).
 
-1. Initialize your configuration.
+1.  Initialize your configuration.
 
         $ ./central init --hostname <hostname> --port <port>
 
-2. Start Mezzanine Central.
+2.  Start Mezzanine Central.
 
         $ ./central up
 
-3. Go to https://[hostname]:[port] where you'll be prompted to create an
-   account and upload a license file.
+3.  Go to https://[hostname]:[port] where you'll be prompted to create an
+    account and upload a license file.
 
 Run `central --help` or `central <command> --help` to learn more about the
 available commands.
-
-
 
 # Updating
 
@@ -67,8 +61,6 @@ Running this command automatically creates a backup which will be restored
 should you experience trouble following an upgrade:
 
     $ ./central revert
-
-
 
 # Backup / Restore
 
@@ -87,11 +79,7 @@ down, run the following command:
 
     $ ./central restore <BACKUP_FILE>
 
-
-
 # Troubleshooting
-
-
 
 ## Commands
 
@@ -138,15 +126,11 @@ last resort to problems or after changing the server's hostname or port using
 
     $ ./central destroy
 
-
-
 ## Mezzanine Central Agent Logs
 
 The central-agent service is what runs on Mezzanine to handle communication
 with the Mezzanine Central server. These logs should be accessible via a
 Mezzanine's admin web portal under the Logs tab as `central-agent.service`.
-
-
 
 ## Mezzanine Central Service Failures
 
@@ -162,13 +146,10 @@ options:
 - [restore a backup](#backup-restore)
 - [destroy and rebuild the cluster](#destroying-the-cluster)
 
-
-
 ## Connection Issues
 
 The most common problems when setting up Mezzanine Central stem from
 networking issues.
-
 
 ### FQDN, Hostname, and IP Address
 
@@ -176,7 +157,6 @@ When identifying machines in Mezzanine Central, be it the server during
 `central init` or when adding rooms through the dashboard, prefer using
 the fully qualified domain name (FQDN). IP addresses should work but
 need to be static to avoid issues in the future.
-
 
 ### Certificates
 
@@ -208,7 +188,6 @@ Certificate" as the subject org (O) and `<CENTRAL_HOST>` as the subject
 common name (CN). The `Subject Altnernative Name` should contain the
 `<CENTRAL_HOST>`. The current date should also fall within the `Validity`
 range.
-
 
 ### Date and Time
 
